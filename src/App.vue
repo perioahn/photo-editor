@@ -53,10 +53,10 @@ async function openFolder() {
   }
 }
 
-function onFallbackFiles(ev: Event) {
+async function onFallbackFiles(ev: Event) {
   const input = ev.target as HTMLInputElement
   if (input.files?.length) {
-    photos.value = openFolderFallback(input.files)
+    photos.value = await openFolderFallback(input.files)
     idx.value = 0
     msg.value = `${photos.value.length}장 로드됨 (저장은 다운로드 폴더로)`
   }
@@ -86,7 +86,7 @@ async function save(next = false) {
   saving.value = true
   msg.value = '저장 중…'
   try {
-    const blob = await renderFinal(cur.value.file, edits.value)
+    const blob = await renderFinal(cur.value.file, edits.value, 0.95, cur.value.exifSource)
     const name = await savePhoto(cur.value, blob)
     cur.value.saved = true
     lastSavedEdits = JSON.parse(JSON.stringify(edits.value))
@@ -190,7 +190,7 @@ onUnmounted(() => {
         />
         <div v-else class="empty">
           <p>📁 폴더를 열어 시작하세요</p>
-          <p class="sub">JPEG 전용 · 원본은 절대 수정하지 않고 <b>이름_e.jpg</b>로 저장됩니다<br />
+          <p class="sub">JPEG · PNG · NEF(내장 JPEG 기준) · 원본은 절대 수정하지 않고 <b>이름_e.jpg</b>로 저장됩니다<br />
             단축키: ←/→ 이동 · R 크롭 · \ 원본 비교 · Ctrl+S 저장 · Ctrl+Shift+S 저장 후 다음</p>
           <p v-if="!hasFS" class="sub warn">이 브라우저는 폴더 저장 미지원 — Edge/Chrome/Whale 권장</p>
         </div>

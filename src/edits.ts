@@ -1,6 +1,7 @@
 // 비파괴 조정값 + 저장 시 1회 렌더 파이프라인.
 // 순서: EXIF 방향 정규화(로드 시) → rot90/flip/미세회전(흰 패딩) → 크롭 → 밝기/대비 → JPEG q0.95 + EXIF 복사
 
+import exifr from 'exifr'
 import piexif from 'piexifjs'
 
 export interface Edits {
@@ -127,7 +128,8 @@ export function renderOriented(src: ImageBitmap | HTMLCanvasElement, e: Edits): 
 }
 
 /** 풀해상도 최종 렌더 → JPEG Blob (EXIF 복사 포함) */
-export async function renderFinal(file: File, e: Edits, quality = 0.95): Promise<Blob> {
+export async function renderFinal(file: File, e: Edits, quality = 0.95,
+                                  exifSource?: Blob): Promise<Blob> {
   const bmp = await loadBitmap(file)
   let canvas = renderOriented(bmp, e)
   bmp.close()
@@ -147,14 +149,21 @@ export async function renderFinal(file: File, e: Edits, quality = 0.95): Promise
   const blob: Blob = await new Promise((res, rej) =>
     canvas.toBlob((b) => (b ? res(b) : rej(new Error('toBlob 실패'))), 'image/jpeg', quality))
 
-  return injectExif(file, blob, canvas.width, canvas.height)
+  return injectExif(exifSource ?? file, blob, canvas.width, canvas.height)
 }
 
-/** 원본 EXIF 복사 + Orientation=1 리셋 + 크기 갱신 + 구식 썸네일 제거 */
-async function injectExif(orig: File, jpeg: Blob, w: number, h: number): Promise<Blob> {
+/** 원본 EXIF 복사 + Orientation=1 리셋 + 크기 갱신 + 구식 썸네일 제거.
+    JPEG 원본 = piexif로 통째 복사. NEF/PNG 등 = exifr로 날짜·카메라만 읽어 새로 구성. */
+async function injectExif(orig: Blob, jpeg: Blob, w: number, h: number): Promise<Blob> {
   try {
-    const [origData, newData] = await Promise.all([blobToDataURL(orig), blobToDataURL(jpeg)])
-    const exif = piexif.load(origData)
+    const newData = await blobToDataURL(jpeg)
+    let exif: any
+    try {
+      exif = piexif.load(await blobToDataURL(orig)) // JPEG 원본 경로
+    } catch {
+      exif = await exifFromMeta(orig) // NEF/PNG: exifr로 핵심 필드만
+      if (!exif) return jpeg
+    }
     exif['0th'][piexif.ImageIFD.Orientation] = 1
     exif['Exif'][piexif.ExifIFD.PixelXDimension] = w
     exif['Exif'][piexif.ExifIFD.PixelYDimension] = h
@@ -163,6 +172,23 @@ async function injectExif(orig: File, jpeg: Blob, w: number, h: number): Promise
     return dataURLToBlob(out)
   } catch {
     return jpeg // EXIF 없는 원본 등 — 이미지 자체는 보존
+  }
+}
+
+async function exifFromMeta(orig: Blob): Promise<any | null> {
+  const m = await exifr.parse(orig, ['DateTimeOriginal', 'Make', 'Model']).catch(() => null)
+  if (!m?.DateTimeOriginal) return null
+  const d: Date = m.DateTimeOriginal
+  const p = (n: number) => String(n).padStart(2, '0')
+  const ts = `${d.getFullYear()}:${p(d.getMonth() + 1)}:${p(d.getDate())} ` +
+             `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  const zeroth: any = {}
+  if (m.Make) zeroth[piexif.ImageIFD.Make] = m.Make
+  if (m.Model) zeroth[piexif.ImageIFD.Model] = m.Model
+  return {
+    '0th': zeroth,
+    'Exif': { [piexif.ExifIFD.DateTimeOriginal]: ts },
+    '1st': {}, 'GPS': {}, 'Interop': {}, 'thumbnail': null,
   }
 }
 
