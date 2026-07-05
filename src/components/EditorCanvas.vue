@@ -26,6 +26,21 @@ const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const
 
 const line = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
 
+// 크롭 모드 커서: 위치별 직관적 표시 (핸들=리사이즈, 안=이동, 밖=회전)
+const ROTATE_CURSOR = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24'><path d='M12 4a8 8 0 1 1-7.5 5.3' fill='none' stroke='black' stroke-width='4.5' stroke-linecap='round'/><path d='M12 4a8 8 0 1 1-7.5 5.3' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'/><path d='M2.5 3.5 L5 10 L11 7 Z' fill='white' stroke='black' stroke-width='1'/></svg>") 11 11, grab`
+const HANDLE_CURSOR: Record<string, string> = {
+  nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+}
+const cursor = ref('')
+
+function updateCursor(p: { x: number; y: number }) {
+  if (props.straighten) { cursor.value = 'crosshair'; return }
+  if (props.mode !== 'crop') { cursor.value = ''; return }
+  const h = hitHandle(p)
+  cursor.value = h ? HANDLE_CURSOR[h] : inRect(p) ? 'move' : ROTATE_CURSOR
+}
+
 let bmp: ImageBitmap | null = null
 let naturalW = 0
 let naturalH = 0
@@ -152,7 +167,33 @@ function currentCrop() {
     h: Math.round(rect.value.h * s),
   }
 }
-defineExpose({ fitView, currentCrop, syncRectFromEdits })
+/** 슬라이더/선긋기 미세회전 시: 크롭 중심의 원본 지점을 고정한 새 crop 좌표(풀해상) 계산 */
+function cropForFineDeg(newDeg: number): { x: number; y: number; w: number; h: number } | null {
+  const c = props.edits.crop
+  if (!c || !bmp) return null
+  const s = fullScale() // 프리뷰→풀해상 (각도 무관 상수)
+  const p1 = { x: (c.x + c.w / 2) / s, y: (c.y + c.h / 2) / s }
+  const src = srcOf(p1, props.edits.fineDeg)
+  const p2 = outOf(src, newDeg)
+  return {
+    x: Math.round(p2.x * s - c.w / 2),
+    y: Math.round(p2.y * s - c.h / 2),
+    w: c.w, h: c.h,
+  }
+}
+
+defineExpose({ fitView, currentCrop, syncRectFromEdits, cropForFineDeg })
+
+// 크롭 모드에서 외부(슬라이더)로 fineDeg가 바뀌면 rect도 앵커 유지
+watch(() => props.edits.fineDeg, (nv, ov) => {
+  if (props.mode !== 'crop' || drag?.kind === 'rotate' || nv === ov) return
+  const cx = rect.value.x + rect.value.w / 2
+  const cy = rect.value.y + rect.value.h / 2
+  const src = srcOf({ x: cx, y: cy }, ov)
+  const p2 = outOf(src, nv)
+  rect.value.x = p2.x - rect.value.w / 2
+  rect.value.y = p2.y - rect.value.h / 2
+})
 
 // ── 포인터 인터랙션 ──
 type Drag =
@@ -222,7 +263,10 @@ function onDown(ev: MouseEvent) {
 }
 
 function onMove(ev: MouseEvent) {
-  if (!drag) return
+  if (!drag) {
+    if (canvasEl.value) updateCursor(canvasPoint(ev))
+    return
+  }
   const p = canvasPoint(ev)
   if (drag.kind === 'line' && line.value) {
     line.value = { ...line.value, x2: p.x, y2: p.y }
@@ -353,6 +397,7 @@ function handlePos(h: string) {
   <div
     class="editor-canvas"
     :class="{ straighten, cropmode: mode === 'crop' }"
+    :style="cursor ? { cursor } : {}"
     @wheel="onWheel"
     @mousedown.prevent="onDown"
     @mousemove="onMove"
@@ -377,8 +422,10 @@ function handlePos(h: string) {
                 :x="handlePos(h).x - 7" :y="handlePos(h).y - 7" width="14" height="14"
                 fill="#fff" stroke="#4c8dff" stroke-width="1.5" />
         </svg>
-        <svg v-if="line" class="line-overlay">
-          <line :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2" />
+        <svg v-if="line && canvasEl" class="line-overlay"
+             :viewBox="`0 0 ${canvasEl.width} ${canvasEl.height}`" preserveAspectRatio="none">
+          <line :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2"
+                vector-effect="non-scaling-stroke" />
         </svg>
       </div>
     </div>

@@ -107,9 +107,18 @@ function set<K extends keyof Edits>(key: K, val: Edits[K]) {
   ;(edits.value as any)[key] = val
 }
 
+/** 미세회전 변경 — 크롭이 있으면 크롭 중심 피벗 유지 (crop 좌표 동반 갱신) */
+function setFineDeg(v: number) {
+  const deg = clampFine(v)
+  pushUndo()
+  const newCrop = canvasRef.value?.cropForFineDeg?.(deg)
+  edits.value.fineDeg = deg
+  if (newCrop) edits.value.crop = newCrop
+}
+
 function onAngle(deg: number) {
   // 그은 선이 수평이 되도록 반대 방향 회전
-  set('fineDeg', clampFine(edits.value.fineDeg - deg))
+  setFineDeg(edits.value.fineDeg - deg)
   straighten.value = false
 }
 const clampFine = (v: number) => Math.max(-15, Math.min(15, Math.round(v * 10) / 10))
@@ -265,9 +274,9 @@ onUnmounted(() => {
             <input type="range" min="-100" max="100" :value="edits.contrast"
                    @input="set('contrast', +($event.target as HTMLInputElement).value)" />
           </label>
-          <label>미세 회전 <span class="val" @dblclick="set('fineDeg', 0)">{{ edits.fineDeg.toFixed(1) }}°</span>
+          <label>미세 회전 <span class="val" @dblclick="setFineDeg(0)">{{ edits.fineDeg.toFixed(1) }}°</span>
             <input type="range" min="-15" max="15" step="0.1" :value="edits.fineDeg"
-                   @input="set('fineDeg', +($event.target as HTMLInputElement).value)" />
+                   @input="setFineDeg(+($event.target as HTMLInputElement).value)" />
           </label>
         </section>
         <section>
