@@ -152,6 +152,12 @@ function syncRectFromEdits() {
     const s = 1 / fullScale()
     const c = props.edits.crop
     rect.value = { x: c.x * s, y: c.y * s, w: c.w * s, h: c.h * s }
+  } else if (props.cropRatio) {
+    // 비율이 이미 선택돼 있으면 초기 창부터 그 비율로 (중앙)
+    let w = C.w * 0.9
+    let h = w / props.cropRatio
+    if (h > C.h * 0.9) { h = C.h * 0.9; w = h * props.cropRatio }
+    rect.value = { x: (C.w - w) / 2, y: (C.h - h) / 2, w, h }
   } else {
     rect.value = { x: C.w * 0.05, y: C.h * 0.05, w: C.w * 0.9, h: C.h * 0.9 }
   }
@@ -183,6 +189,21 @@ function cropForFineDeg(newDeg: number): { x: number; y: number; w: number; h: n
 }
 
 defineExpose({ fitView, currentCrop, syncRectFromEdits, cropForFineDeg })
+
+// 비율 변경 시 즉시 반영 — 크롭창 중심 고정, 너비 유지하고 높이 재계산
+watch(() => props.cropRatio, (r) => {
+  if (props.mode !== 'crop' || !r) return
+  const C = canvasSizeAt(props.edits.fineDeg)
+  const cx = rect.value.x + rect.value.w / 2
+  const cy = rect.value.y + rect.value.h / 2
+  let w = rect.value.w
+  let h = w / r
+  const maxH = C.h * 0.98
+  const maxW = C.w * 0.98
+  if (h > maxH) { h = maxH; w = h * r }
+  if (w > maxW) { w = maxW; h = w / r }
+  rect.value = { x: cx - w / 2, y: cy - h / 2, w, h }
+})
 
 // 크롭 모드에서 외부(슬라이더)로 fineDeg가 바뀌면 rect도 앵커 유지
 watch(() => props.edits.fineDeg, (nv, ov) => {

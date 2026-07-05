@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import EditorCanvas from './components/EditorCanvas.vue'
 import { freshEdits, isDirty, renderFinal, type Edits } from './edits'
-import { hasFS, openFolderFallback, openFolderFS, savePhoto, type Photo } from './files'
+import { hasFS, openFolderFallback, openFolderFS, pickSaveFolder, saveDirName, savePhoto, type Photo } from './files'
 
 const photos = ref<Photo[]>([])
 const idx = ref(0)
@@ -76,13 +76,25 @@ function undo() {
 }
 const reactiveEdits = (e: Edits): Edits => reactive(JSON.parse(JSON.stringify(e)))
 
+const saveFolder = ref<string | null>(null)
+
 async function openFolder() {
   try {
     photos.value = await openFolderFS()
     idx.value = 0
-    msg.value = photos.value.length ? `${photos.value.length}장 로드됨` : 'JPEG 없음'
+    saveFolder.value = saveDirName() // 기본 = 편집 폴더
+    msg.value = photos.value.length ? `${photos.value.length}장 로드됨` : '사진 없음'
   } catch (e: any) {
     if (e?.name !== 'AbortError') msg.value = `폴더 열기 실패: ${e.message ?? e}`
+  }
+}
+
+async function chooseSaveFolder() {
+  try {
+    saveFolder.value = await pickSaveFolder()
+    msg.value = `저장 폴더: ${saveFolder.value}`
+  } catch (e: any) {
+    if (e?.name !== 'AbortError') msg.value = `저장 폴더 선택 실패: ${e.message ?? e}`
   }
 }
 
@@ -147,10 +159,14 @@ async function save(next = false) {
 function pastePrev() {
   if (!lastSavedEdits || !cur.value) return
   pushUndo()
-  const p = JSON.parse(JSON.stringify(lastSavedEdits)) as Edits
-  p.crop = null // 크롭은 사진마다 다름 — 붙여넣기 제외 (Codex 정책)
-  editsMap.set(cur.value.name, reactiveEdits(p))
-  msg.value = '이전 보정값 적용됨 (크롭 제외)'
+  // 밝기·대비만 복사 (회전/플립/크롭 위치는 사진마다 다름).
+  // 크롭이 있었다면 그 비율만 다음 크롭 기본값으로.
+  edits.value.brightness = lastSavedEdits.brightness
+  edits.value.contrast = lastSavedEdits.contrast
+  if (lastSavedEdits.crop) {
+    cropRatio.value = lastSavedEdits.crop.w / lastSavedEdits.crop.h
+  }
+  msg.value = '밝기·대비 적용됨' + (lastSavedEdits.crop ? ' (크롭 비율은 크롭 모드 기본값으로)' : '')
 }
 
 function resetAll() {
@@ -200,11 +216,15 @@ onUnmounted(() => {
   <div class="layout">
     <header class="topbar">
       <b>임상사진 에디터</b>
-      <button v-if="hasFS" class="primary" @click="openFolder">📁 폴더 열기</button>
+      <button v-if="hasFS" class="primary" @click="openFolder">📁 편집할 사진 폴더 열기</button>
       <label v-else class="primary file-label">
         📁 폴더 선택 (저장=다운로드)
         <input ref="fallbackInput" type="file" webkitdirectory multiple hidden @change="onFallbackFiles" />
       </label>
+      <button v-if="hasFS && photos.length" :title="`현재 저장 위치: ${saveFolder ?? '편집 폴더'}`"
+              @click="chooseSaveFolder">
+        💾→ {{ saveFolder ?? '저장 폴더' }}
+      </button>
       <template v-if="cur && mode === 'crop'">
         <span class="sep" />
         <span class="crop-label">✂ 크롭·회전</span>

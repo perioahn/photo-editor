@@ -14,6 +14,17 @@ export const hasFS = 'showDirectoryPicker' in window
   && !new URLSearchParams(location.search).has('fallback') // ?fallback=1 = 강제 폴백(테스트용)
 
 let dirHandle: FileSystemDirectoryHandle | null = null
+let saveDirHandle: FileSystemDirectoryHandle | null = null // null = 편집 폴더와 동일
+
+export function saveDirName(): string | null {
+  return saveDirHandle?.name ?? dirHandle?.name ?? null
+}
+
+/** 저장 폴더 별도 지정 (기본 = 편집 폴더) */
+export async function pickSaveFolder(): Promise<string> {
+  saveDirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+  return saveDirHandle!.name
+}
 
 const IMG_RE = /\.(jpe?g|png|nef)$/i
 const NEF_RE = /\.nef$/i
@@ -50,6 +61,7 @@ async function toPhoto(f: File, handle: FileSystemFileHandle | null): Promise<Ph
 
 export async function openFolderFS(): Promise<Photo[]> {
   dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+  saveDirHandle = null // 새 편집 폴더 선택 → 저장 폴더도 그곳으로 리셋
   const out: Photo[] = []
   for await (const entry of (dirHandle as any).values()) {
     if (entry.kind === 'file' && IMG_RE.test(entry.name) && !entry.name.startsWith('.')) {
@@ -82,12 +94,13 @@ function editedName(name: string): string {
 /** 저장: FS 모드 = 같은 폴더에 {이름}_e.jpg, 폴백 = 브라우저 다운로드 */
 export async function savePhoto(photo: Photo, blob: Blob): Promise<string> {
   const outName = editedName(photo.name)
-  if (dirHandle && photo.handle) {
-    const fh = await dirHandle.getFileHandle(outName, { create: true })
+  const target = saveDirHandle ?? dirHandle
+  if (target && photo.handle) {
+    const fh = await target.getFileHandle(outName, { create: true })
     const w = await fh.createWritable()
     await w.write(blob)
     await w.close()
-    return outName
+    return saveDirHandle ? `${saveDirHandle.name}/${outName}` : outName
   }
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
