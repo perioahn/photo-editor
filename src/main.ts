@@ -3,7 +3,6 @@ import exifr from 'exifr'
 import App from './App.vue'
 import { renderFinal } from './edits'
 import './style.css'
-import 'vue-advanced-cropper/dist/style.css'
 
 createApp(App).mount('#app')
 

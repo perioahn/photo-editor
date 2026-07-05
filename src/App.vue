@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import CropModal from './components/CropModal.vue'
 import EditorCanvas from './components/EditorCanvas.vue'
 import { freshEdits, isDirty, renderFinal, type Edits } from './edits'
 import { hasFS, openFolderFallback, openFolderFS, savePhoto, type Photo } from './files'
@@ -10,7 +9,41 @@ const idx = ref(0)
 const editsMap = reactive(new Map<string, Edits>())
 const straighten = ref(false)
 const showOriginal = ref(false)
-const showCrop = ref(false)
+const mode = ref<'view' | 'crop'>('view')
+const cropRatio = ref<number | null>(null)
+const customW = ref<number | null>(null)
+const customH = ref<number | null>(null)
+const RATIO_PRESETS: [string, number][] = [
+  ['1:1', 1], ['4:3', 4 / 3], ['3:2', 3 / 2], ['16:10', 1.6], ['16:9', 16 / 9],
+]
+
+function applyCustomRatio() {
+  if (customW.value && customH.value && customW.value > 0 && customH.value > 0) {
+    cropRatio.value = customW.value / customH.value
+  }
+}
+
+function enterCrop() {
+  straighten.value = false
+  mode.value = 'crop'
+}
+
+function applyCrop() {
+  const c = canvasRef.value?.currentCrop?.()
+  if (c) set('crop', c)
+  mode.value = 'view'
+  canvasRef.value?.fitView()
+}
+
+function cancelCrop() {
+  mode.value = 'view'
+  canvasRef.value?.syncRectFromEdits?.()
+}
+
+function clearCrop() {
+  set('crop', null)
+  mode.value = 'view'
+}
 const saving = ref(false)
 const msg = ref('')
 const canvasRef = ref<InstanceType<typeof EditorCanvas> | null>(null)
@@ -119,11 +152,17 @@ function resetAll() {
 
 function onKey(e: KeyboardEvent) {
   if ((e.target as HTMLElement).tagName === 'INPUT') return
+  if (mode.value === 'crop') {
+    if (e.key === 'Enter') applyCrop()
+    else if (e.key === 'Escape') cancelCrop()
+    else if (e.key === 'r' || e.key === 'R') cancelCrop()
+    return
+  }
   if (e.key === 'ArrowRight') goto(idx.value + 1)
   else if (e.key === 'ArrowLeft') goto(idx.value - 1)
   else if (e.key === '\\') showOriginal.value = !showOriginal.value
   else if (e.key === '0') canvasRef.value?.fitView()
-  else if (e.key === 'r' || e.key === 'R') showCrop.value = true
+  else if (e.key === 'r' || e.key === 'R') enterCrop()
   else if (e.ctrlKey && e.key === ']') set('rot90', (edits.value.rot90 + 1) % 4)
   else if (e.ctrlKey && e.key === '[') set('rot90', (edits.value.rot90 + 3) % 4)
   else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); save(true) }
@@ -157,7 +196,23 @@ onUnmounted(() => {
         📁 폴더 선택 (저장=다운로드)
         <input ref="fallbackInput" type="file" webkitdirectory multiple hidden @change="onFallbackFiles" />
       </label>
-      <template v-if="cur">
+      <template v-if="cur && mode === 'crop'">
+        <span class="sep" />
+        <span class="crop-label">✂ 크롭·회전</span>
+        <button :class="{ on: cropRatio === null }" @click="cropRatio = null">자유</button>
+        <button v-for="[label, r] in RATIO_PRESETS" :key="label"
+                :class="{ on: cropRatio === r }" @click="cropRatio = r">{{ label }}</button>
+        <span class="custom-ratio">
+          <input v-model.number="customW" type="number" min="1" placeholder="W"
+                 @change="applyCustomRatio" />:<input v-model.number="customH" type="number"
+                 min="1" placeholder="H" @change="applyCustomRatio" />
+        </span>
+        <span class="spacer" />
+        <button v-if="edits.crop" @click="clearCrop">크롭 제거</button>
+        <button class="primary" title="Enter" @click="applyCrop">✓ 적용</button>
+        <button title="Esc" @click="cancelCrop">취소</button>
+      </template>
+      <template v-else-if="cur">
         <span class="sep" />
         <button title="90° 반시계 (Ctrl+[)" @click="set('rot90', (edits.rot90 + 3) % 4)">⟲ 90°</button>
         <button title="90° 시계 (Ctrl+])" @click="set('rot90', (edits.rot90 + 1) % 4)">⟳ 90°</button>
@@ -165,7 +220,7 @@ onUnmounted(() => {
         <button title="상하 반전" @click="set('flipV', !edits.flipV)">↕ 플립</button>
         <button :class="{ on: straighten }" title="수평선 긋기 — 그은 선이 수평이 되게 회전"
                 @click="straighten = !straighten">📐 수평 맞추기</button>
-        <button title="크롭 (R)" @click="showCrop = true">✂ 크롭</button>
+        <button title="크롭·회전 (R)" @click="enterCrop">✂ 크롭</button>
         <span class="spacer" />
         <span class="msg">{{ msg }}</span>
         <button :disabled="saving" title="Ctrl+S" @click="save(false)">💾 저장</button>
@@ -184,9 +239,12 @@ onUnmounted(() => {
           :key="cur.name"
           :photo="cur"
           :edits="edits"
+          :mode="mode"
+          :crop-ratio="cropRatio"
           :straighten="straighten"
           :show-original="showOriginal"
           @angle="onAngle"
+          @fine-deg="(d) => (edits.fineDeg = d)"
         />
         <div v-else class="empty">
           <p>📁 폴더를 열어 시작하세요</p>
@@ -246,13 +304,5 @@ onUnmounted(() => {
       </div>
     </footer>
 
-    <CropModal
-      v-if="showCrop && cur"
-      :photo="cur"
-      :edits="edits"
-      @apply="(c) => { set('crop', c); showCrop = false }"
-      @clear="set('crop', null); showCrop = false"
-      @close="showCrop = false"
-    />
   </div>
 </template>

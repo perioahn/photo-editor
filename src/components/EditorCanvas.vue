@@ -3,23 +3,78 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { applyLUT, buildLUT, orientedSize, renderOriented, type Edits } from '../edits'
 import type { Photo } from '../files'
 
-const props = defineProps<{ photo: Photo; edits: Edits; straighten: boolean; showOriginal: boolean }>()
-const emit = defineEmits<{ angle: [deg: number] }>()
+const props = defineProps<{
+  photo: Photo
+  edits: Edits
+  mode: 'view' | 'crop'
+  cropRatio: number | null // 크롭모드 비율 강제 (null=자유)
+  straighten: boolean
+  showOriginal: boolean
+}>()
+const emit = defineEmits<{ angle: [deg: number]; fineDeg: [deg: number] }>()
 
 const canvasEl = ref<HTMLCanvasElement | null>(null)
 
+// 뷰 상태 (view 모드 전용)
 const zoom = ref(1)
 const panX = ref(0)
 const panY = ref(0)
-let dragging = false
-let lastX = 0, lastY = 0
+
+// 크롭 모드 상태 (미리보기 캔버스 좌표)
+const rect = ref({ x: 0, y: 0, w: 100, h: 100 })
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const
 
 const line = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
-let drawingLine = false
 
-let bmp: ImageBitmap | null = null // 미리보기용 축소 비트맵
-let naturalW = 0, naturalH = 0
+let bmp: ImageBitmap | null = null
+let naturalW = 0
+let naturalH = 0
 const PREVIEW_MAX = 1600
+
+// ── 좌표 수학: oriented(θ) ↔ 원본(rot90/flip 후) ──
+// renderOriented는 중심 회전 + 외접 확장이므로:
+//   src = R(-θ)·(p − C(θ)) + c0,  out = R(θ)·(s − c0) + C(θ)
+function baseSize() {
+  const swap = props.edits.rot90 % 2 === 1
+  const w = bmp?.width ?? 1
+  const h = bmp?.height ?? 1
+  return { w: swap ? h : w, h: swap ? w : h }
+}
+function canvasSizeAt(deg: number) {
+  const b = baseSize()
+  const rad = (deg * Math.PI) / 180
+  const cos = Math.abs(Math.cos(rad))
+  const sin = Math.abs(Math.sin(rad))
+  return deg === 0 ? b : { w: Math.round(b.w * cos + b.h * sin), h: Math.round(b.w * sin + b.h * cos) }
+}
+function srcOf(p: { x: number; y: number }, deg: number) {
+  const C = canvasSizeAt(deg)
+  const b = baseSize()
+  const rad = (-deg * Math.PI) / 180
+  const dx = p.x - C.w / 2
+  const dy = p.y - C.h / 2
+  return {
+    x: dx * Math.cos(rad) - dy * Math.sin(rad) + b.w / 2,
+    y: dx * Math.sin(rad) + dy * Math.cos(rad) + b.h / 2,
+  }
+}
+function outOf(s: { x: number; y: number }, deg: number) {
+  const C = canvasSizeAt(deg)
+  const b = baseSize()
+  const rad = (deg * Math.PI) / 180
+  const dx = s.x - b.w / 2
+  const dy = s.y - b.h / 2
+  return {
+    x: dx * Math.cos(rad) - dy * Math.sin(rad) + C.w / 2,
+    y: dx * Math.sin(rad) + dy * Math.cos(rad) + C.h / 2,
+  }
+}
+
+/** 미리보기 → 풀해상 배율 */
+function fullScale() {
+  const os = orientedSize(naturalW, naturalH, { ...props.edits, crop: null })
+  return os.w / canvasSizeAt(props.edits.fineDeg).w
+}
 
 async function loadPreview() {
   bmp?.close()
@@ -37,6 +92,7 @@ async function loadPreview() {
     bmp = full
   }
   fitView()
+  syncRectFromEdits()
   render()
 }
 
@@ -45,27 +101,214 @@ function render() {
   const e = props.showOriginal
     ? { ...props.edits, rot90: 0, flipH: false, flipV: false, fineDeg: 0, crop: null }
     : props.edits
-  let c: HTMLCanvasElement = renderOriented(bmp, e)
-  if (e.crop) {
-    // crop 좌표 = 풀해상 oriented 기준 → 미리보기 배율 환산
-    const scale = c.width / orientedSize(naturalW, naturalH, e).w
-    const cc = document.createElement('canvas')
-    cc.width = Math.max(1, Math.round(e.crop.w * scale))
-    cc.height = Math.max(1, Math.round(e.crop.h * scale))
-    cc.getContext('2d')!.drawImage(c, e.crop.x * scale, e.crop.y * scale,
-      e.crop.w * scale, e.crop.h * scale, 0, 0, cc.width, cc.height)
-    c = cc
-  }
+  // 항상 풀 oriented 렌더 (크롭은 오버레이로 표현 — 바깥이 계속 보이도록)
+  const c = renderOriented(bmp, { ...e, crop: null })
   const cv = canvasEl.value
   cv.width = c.width
   cv.height = c.height
-  cv.getContext('2d')!.drawImage(c, 0, 0)
+  const g = cv.getContext('2d')!
+  g.drawImage(c, 0, 0)
   if (!props.showOriginal && (e.brightness !== 0 || e.contrast !== 0)) {
-    applyLUT(cv, buildLUT(e.brightness, e.contrast)) // 저장과 동일 톤 = WYSIWYG
+    applyLUT(cv, buildLUT(e.brightness, e.contrast))
+  }
+  // view 모드 + 크롭 존재: 바깥 어둡게 (라이트룸식 — 잘린 부분도 계속 보임)
+  if (props.mode === 'view' && e.crop && !props.showOriginal) {
+    const s = 1 / fullScale()
+    dimOutside(g, cv, e.crop.x * s, e.crop.y * s, e.crop.w * s, e.crop.h * s, 0.72)
   }
 }
 
-// 슬라이더 드래그 → rAF 스로틀 재렌더
+function dimOutside(g: CanvasRenderingContext2D, cv: HTMLCanvasElement,
+                    x: number, y: number, w: number, h: number, alpha: number) {
+  g.save()
+  g.fillStyle = `rgba(10,11,14,${alpha})`
+  g.beginPath()
+  g.rect(0, 0, cv.width, cv.height)
+  g.rect(x, y, w, h)
+  g.fill('evenodd')
+  g.restore()
+}
+
+// ── 크롭 rect ↔ edits.crop 동기화 ──
+function syncRectFromEdits() {
+  if (!bmp) return
+  const C = canvasSizeAt(props.edits.fineDeg)
+  if (props.edits.crop) {
+    const s = 1 / fullScale()
+    const c = props.edits.crop
+    rect.value = { x: c.x * s, y: c.y * s, w: c.w * s, h: c.h * s }
+  } else {
+    rect.value = { x: C.w * 0.05, y: C.h * 0.05, w: C.w * 0.9, h: C.h * 0.9 }
+  }
+}
+
+/** 현재 rect를 풀해상 좌표로 (App이 적용 시 호출) */
+function currentCrop() {
+  const s = fullScale()
+  return {
+    x: Math.max(0, Math.round(rect.value.x * s)),
+    y: Math.max(0, Math.round(rect.value.y * s)),
+    w: Math.round(rect.value.w * s),
+    h: Math.round(rect.value.h * s),
+  }
+}
+defineExpose({ fitView, currentCrop, syncRectFromEdits })
+
+// ── 포인터 인터랙션 ──
+type Drag =
+  | { kind: 'pan'; x: number; y: number }
+  | { kind: 'line' }
+  | { kind: 'move'; ox: number; oy: number }
+  | { kind: 'resize'; handle: string; anchor: { x: number; y: number } }
+  | { kind: 'rotate'; theta0: number; a0: number; s0: { x: number; y: number }; w: number; h: number }
+let drag: Drag | null = null
+
+function canvasPoint(ev: MouseEvent) {
+  const r = canvasEl.value!.getBoundingClientRect()
+  return {
+    x: ((ev.clientX - r.left) / r.width) * canvasEl.value!.width,
+    y: ((ev.clientY - r.top) / r.height) * canvasEl.value!.height,
+  }
+}
+
+function hitHandle(p: { x: number; y: number }): string | null {
+  const r = rect.value
+  const t = Math.max(14, canvasEl.value!.width * 0.015)
+  const xs: Record<string, number> = { w: r.x, e: r.x + r.w, c: r.x + r.w / 2 }
+  const ys: Record<string, number> = { n: r.y, s: r.y + r.h, c: r.y + r.h / 2 }
+  for (const h of HANDLES) {
+    const hx = h.includes('w') ? xs.w : h.includes('e') ? xs.e : xs.c
+    const hy = h.includes('n') ? ys.n : h.includes('s') ? ys.s : ys.c
+    if (Math.abs(p.x - hx) < t && Math.abs(p.y - hy) < t) return h
+  }
+  return null
+}
+const inRect = (p: { x: number; y: number }) => {
+  const r = rect.value
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h
+}
+
+function onDown(ev: MouseEvent) {
+  const p = canvasPoint(ev)
+  if (props.straighten) {
+    line.value = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
+    drag = { kind: 'line' }
+    return
+  }
+  if (props.mode === 'crop') {
+    const h = hitHandle(p)
+    if (h) {
+      const r = rect.value
+      const ax = h.includes('w') ? r.x + r.w : r.x // 반대편 고정점
+      const ay = h.includes('n') ? r.y + r.h : r.y
+      drag = { kind: 'resize', handle: h, anchor: { x: ax, y: ay } }
+    } else if (inRect(p)) {
+      drag = { kind: 'move', ox: p.x - rect.value.x, oy: p.y - rect.value.y }
+    } else {
+      // 바깥 드래그 = 크롭창 중심 피벗 회전
+      const cx = rect.value.x + rect.value.w / 2
+      const cy = rect.value.y + rect.value.h / 2
+      drag = {
+        kind: 'rotate',
+        theta0: props.edits.fineDeg,
+        a0: Math.atan2(p.y - cy, p.x - cx),
+        s0: srcOf({ x: cx, y: cy }, props.edits.fineDeg),
+        w: rect.value.w, h: rect.value.h,
+      }
+    }
+  } else {
+    drag = { kind: 'pan', x: ev.clientX, y: ev.clientY }
+  }
+}
+
+function onMove(ev: MouseEvent) {
+  if (!drag) return
+  const p = canvasPoint(ev)
+  if (drag.kind === 'line' && line.value) {
+    line.value = { ...line.value, x2: p.x, y2: p.y }
+  } else if (drag.kind === 'pan') {
+    panX.value += ev.clientX - drag.x
+    panY.value += ev.clientY - drag.y
+    drag.x = ev.clientX
+    drag.y = ev.clientY
+  } else if (drag.kind === 'move') {
+    const C = canvasSizeAt(props.edits.fineDeg)
+    rect.value.x = Math.min(Math.max(p.x - drag.ox, -rect.value.w * 0.5), C.w - rect.value.w * 0.5)
+    rect.value.y = Math.min(Math.max(p.y - drag.oy, -rect.value.h * 0.5), C.h - rect.value.h * 0.5)
+  } else if (drag.kind === 'resize') {
+    const a = drag.anchor
+    const hnd = drag.handle
+    const corner = hnd.length === 2
+    let w = rect.value.w
+    let h = rect.value.h
+    if (corner) {
+      w = Math.abs(p.x - a.x)
+      h = Math.abs(p.y - a.y)
+      if (props.cropRatio) {
+        if (w / h > props.cropRatio) h = w / props.cropRatio
+        else w = h * props.cropRatio
+      }
+    } else if (hnd === 'e' || hnd === 'w') {
+      w = Math.abs(p.x - a.x)
+      if (props.cropRatio) h = w / props.cropRatio
+    } else {
+      h = Math.abs(p.y - a.y)
+      if (props.cropRatio) w = h * props.cropRatio
+    }
+    w = Math.max(24, w)
+    h = Math.max(24, h)
+    let x = rect.value.x
+    let y = rect.value.y
+    if (corner) {
+      x = hnd.includes('w') ? a.x - w : a.x
+      y = hnd.includes('n') ? a.y - h : a.y
+    } else if (hnd === 'w') { x = a.x - w; if (props.cropRatio) y += (rect.value.h - h) / 2 }
+    else if (hnd === 'e') { x = a.x; if (props.cropRatio) y += (rect.value.h - h) / 2 }
+    else if (hnd === 'n') { y = a.y - h; if (props.cropRatio) x += (rect.value.w - w) / 2 }
+    else { y = a.y; if (props.cropRatio) x += (rect.value.w - w) / 2 }
+    rect.value = { x, y, w, h }
+  } else if (drag.kind === 'rotate') {
+    const cx = rect.value.x + rect.value.w / 2
+    const cy = rect.value.y + rect.value.h / 2
+    const a = Math.atan2(p.y - cy, p.x - cx)
+    let deg = drag.theta0 + ((a - drag.a0) * 180) / Math.PI
+    deg = Math.max(-15, Math.min(15, Math.round(deg * 10) / 10))
+    emit('fineDeg', deg) // App이 edits.fineDeg 갱신 → 재렌더
+    // 크롭 중심이 가리키던 원본 지점 고정 (피벗 = 크롭 중심)
+    const c2 = outOf(drag.s0, deg)
+    rect.value.x = c2.x - drag.w / 2
+    rect.value.y = c2.y - drag.h / 2
+  }
+}
+
+function onUp() {
+  if (drag?.kind === 'line' && line.value) {
+    const { x1, y1, x2, y2 } = line.value
+    if (Math.hypot(x2 - x1, y2 - y1) > 15) {
+      let deg = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI
+      if (deg > 45) deg -= 90
+      else if (deg < -45) deg += 90
+      if (Math.abs(deg) <= 45) emit('angle', deg)
+    }
+    line.value = null
+  }
+  drag = null
+}
+
+function onWheel(ev: WheelEvent) {
+  if (props.mode === 'crop') return
+  ev.preventDefault()
+  const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15
+  zoom.value = Math.min(12, Math.max(0.2, zoom.value * f))
+}
+
+function fitView() {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
+// rAF 스로틀 재렌더
 let rafPending = false
 function renderThrottled() {
   if (rafPending) return
@@ -76,65 +319,12 @@ function renderThrottled() {
   })
 }
 
-function fitView() {
-  zoom.value = 1
-  panX.value = 0
-  panY.value = 0
-}
-
-function onWheel(ev: WheelEvent) {
-  ev.preventDefault()
-  const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15
-  zoom.value = Math.min(12, Math.max(0.2, zoom.value * f))
-}
-
-function canvasPoint(ev: MouseEvent) {
-  const r = canvasEl.value!.getBoundingClientRect()
-  return { x: ev.clientX - r.left, y: ev.clientY - r.top }
-}
-
-function onDown(ev: MouseEvent) {
-  if (props.straighten) {
-    const p = canvasPoint(ev)
-    line.value = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
-    drawingLine = true
-  } else {
-    dragging = true
-    lastX = ev.clientX
-    lastY = ev.clientY
-  }
-}
-
-function onMove(ev: MouseEvent) {
-  if (drawingLine && line.value) {
-    const p = canvasPoint(ev)
-    line.value = { ...line.value, x2: p.x, y2: p.y }
-  } else if (dragging) {
-    panX.value += ev.clientX - lastX
-    panY.value += ev.clientY - lastY
-    lastX = ev.clientX
-    lastY = ev.clientY
-  }
-}
-
-function onUp() {
-  if (drawingLine && line.value) {
-    const { x1, y1, x2, y2 } = line.value
-    if (Math.hypot(x2 - x1, y2 - y1) > 15) {
-      let deg = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI
-      if (deg > 45) deg -= 90        // 수직선 의도
-      else if (deg < -45) deg += 90
-      if (Math.abs(deg) <= 45) emit('angle', deg) // core_crop 정책: 45° 초과 무시
-    }
-    line.value = null
-  }
-  drawingLine = false
-  dragging = false
-}
-
-defineExpose({ fitView })
-
 watch(() => props.photo, loadPreview)
+watch(() => props.mode, () => {
+  fitView()
+  if (props.mode === 'crop') syncRectFromEdits()
+  renderThrottled()
+})
 watch(() => [props.edits.rot90, props.edits.flipH, props.edits.flipV,
              props.edits.fineDeg, props.edits.crop, props.showOriginal,
              props.edits.brightness, props.edits.contrast],
@@ -148,12 +338,21 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', onUp)
   bmp?.close()
 })
+
+// SVG 오버레이용 (크롭 모드)
+function handlePos(h: string) {
+  const r = rect.value
+  return {
+    x: h.includes('w') ? r.x : h.includes('e') ? r.x + r.w : r.x + r.w / 2,
+    y: h.includes('n') ? r.y : h.includes('s') ? r.y + r.h : r.y + r.h / 2,
+  }
+}
 </script>
 
 <template>
   <div
     class="editor-canvas"
-    :class="{ straighten }"
+    :class="{ straighten, cropmode: mode === 'crop' }"
     @wheel="onWheel"
     @mousedown.prevent="onDown"
     @mousemove="onMove"
@@ -161,6 +360,23 @@ onUnmounted(() => {
     <div class="stage" :style="{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})` }">
       <div class="canvas-holder">
         <canvas ref="canvasEl" />
+        <svg v-if="mode === 'crop' && canvasEl" class="crop-overlay"
+             :viewBox="`0 0 ${canvasEl.width} ${canvasEl.height}`" preserveAspectRatio="none">
+          <path :d="`M0 0 H${canvasEl.width} V${canvasEl.height} H0 Z
+                     M${rect.x} ${rect.y} h${rect.w} v${rect.h} h${-rect.w} Z`"
+                fill="rgba(10,11,14,0.6)" fill-rule="evenodd" />
+          <rect :x="rect.x" :y="rect.y" :width="rect.w" :height="rect.h"
+                fill="none" stroke="#fff" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+          <line v-for="i in 2" :key="'v' + i" :x1="rect.x + (rect.w * i) / 3" :y1="rect.y"
+                :x2="rect.x + (rect.w * i) / 3" :y2="rect.y + rect.h"
+                stroke="rgba(255,255,255,0.35)" vector-effect="non-scaling-stroke" />
+          <line v-for="i in 2" :key="'h' + i" :x1="rect.x" :y1="rect.y + (rect.h * i) / 3"
+                :x2="rect.x + rect.w" :y2="rect.y + (rect.h * i) / 3"
+                stroke="rgba(255,255,255,0.35)" vector-effect="non-scaling-stroke" />
+          <rect v-for="h in HANDLES" :key="h"
+                :x="handlePos(h).x - 7" :y="handlePos(h).y - 7" width="14" height="14"
+                fill="#fff" stroke="#4c8dff" stroke-width="1.5" />
+        </svg>
         <svg v-if="line" class="line-overlay">
           <line :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2" />
         </svg>
@@ -168,6 +384,9 @@ onUnmounted(() => {
     </div>
     <div v-if="straighten" class="straighten-hint">
       수평(또는 수직)이어야 할 선을 드래그로 그으세요 — 자동으로 각도 보정
+    </div>
+    <div v-else-if="mode === 'crop'" class="straighten-hint">
+      안쪽 드래그=이동 · 꼭지점=크기(비율 유지) · <b>바깥 드래그=회전</b> · Enter=적용
     </div>
   </div>
 </template>
