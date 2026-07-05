@@ -1,0 +1,3 @@
+[2026-07-05T05:37:17.683Z] GET http://127.0.0.1:8795/?fallback=1 → 200 (4ms, 388B)
+[2026-07-05T05:37:17.689Z] GET http://127.0.0.1:8795/assets/index-BqJU6f2B.js → 200 (8ms, 264421B)
+[2026-07-05T05:37:17.689Z] GET http://127.0.0.1:8795/assets/index-Dd-IeMph.css → 200 (2ms, 9015B)
