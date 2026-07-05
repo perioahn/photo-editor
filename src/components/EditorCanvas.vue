@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { cssFilter, orientedSize, renderOriented, type Edits } from '../edits'
+import { applyLUT, buildLUT, orientedSize, renderOriented, type Edits } from '../edits'
 import type { Photo } from '../files'
 
 const props = defineProps<{ photo: Photo; edits: Edits; straighten: boolean; showOriginal: boolean }>()
@@ -60,6 +60,20 @@ function render() {
   cv.width = c.width
   cv.height = c.height
   cv.getContext('2d')!.drawImage(c, 0, 0)
+  if (!props.showOriginal && (e.brightness !== 0 || e.contrast !== 0)) {
+    applyLUT(cv, buildLUT(e.brightness, e.contrast)) // 저장과 동일 톤 = WYSIWYG
+  }
+}
+
+// 슬라이더 드래그 → rAF 스로틀 재렌더
+let rafPending = false
+function renderThrottled() {
+  if (rafPending) return
+  rafPending = true
+  requestAnimationFrame(() => {
+    rafPending = false
+    render()
+  })
 }
 
 function fitView() {
@@ -122,8 +136,9 @@ defineExpose({ fitView })
 
 watch(() => props.photo, loadPreview)
 watch(() => [props.edits.rot90, props.edits.flipH, props.edits.flipV,
-             props.edits.fineDeg, props.edits.crop, props.showOriginal],
-  render, { deep: true })
+             props.edits.fineDeg, props.edits.crop, props.showOriginal,
+             props.edits.brightness, props.edits.contrast],
+  renderThrottled, { deep: true })
 
 onMounted(() => {
   document.addEventListener('mouseup', onUp)
@@ -145,7 +160,7 @@ onUnmounted(() => {
   >
     <div class="stage" :style="{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})` }">
       <div class="canvas-holder">
-        <canvas ref="canvasEl" :style="{ filter: showOriginal ? 'none' : cssFilter(edits) }" />
+        <canvas ref="canvasEl" />
         <svg v-if="line" class="line-overlay">
           <line :x1="line.x1" :y1="line.y1" :x2="line.x2" :y2="line.y2" />
         </svg>

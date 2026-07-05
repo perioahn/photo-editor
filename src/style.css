@@ -134,3 +134,9 @@ body {
 .crop-toolbar button.primary { background: var(--accent); color: #fff; border: none; }
 .crop-toolbar button.ghost { color: var(--muted); }
 .cropper { flex: 1; background: #0d0e12; }
+.custom-ratio { display: flex; gap: 4px; align-items: center; color: var(--muted); margin-left: 6px; }
+.custom-ratio input {
+  width: 52px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px;
+}
+.custom-ratio input:focus { border-color: var(--accent); outline: none; }

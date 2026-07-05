@@ -22,9 +22,53 @@ export const isDirty = (e: Edits): boolean =>
   e.rot90 !== 0 || e.flipH || e.flipV || e.fineDeg !== 0 ||
   e.brightness !== 0 || e.contrast !== 0 || e.crop !== null
 
-/** CSS filter 문자열 (실시간 미리보기용) */
-export const cssFilter = (e: Edits): string =>
-  `brightness(${1 + e.brightness / 100}) contrast(${1 + e.contrast / 100})`
+// ── 라이트룸식 톤 조정 (LUT) ─────────────────────────
+// 노출: sRGB→선형 → 2^EV 게인 → 하이라이트 soft shoulder → sRGB 복귀
+// 대비: 감마 공간 중간톤 중심 S커브(smoothstep 블렌드)
+// CSS brightness()의 단순 곱과 달리 하이라이트가 날아가지 않음.
+
+const srgbToLin = (v: number) =>
+  v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+const linToSrgb = (v: number) =>
+  v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
+
+export function buildLUT(brightness: number, contrast: number): Uint8ClampedArray {
+  const ev = (brightness / 100) * 2.5          // 슬라이더 ±100 → ±2.5 스톱
+  const gain = Math.pow(2, ev)
+  const c = contrast / 100                     // -1 ~ +1
+  const KNEE = 0.8                             // shoulder 시작점 (선형 공간)
+  const lut = new Uint8ClampedArray(256)
+  for (let i = 0; i < 256; i++) {
+    let lin = srgbToLin(i / 255) * gain
+    if (lin > KNEE) {
+      // soft shoulder: KNEE 위는 점근적으로 1에 수렴 (하드 클립 방지)
+      const t = lin - KNEE
+      lin = KNEE + (1 - KNEE) * (t / (t + (1 - KNEE)))
+    }
+    let v = linToSrgb(Math.min(1, Math.max(0, lin)))
+    if (c > 0) {
+      const s = v * v * (3 - 2 * v)            // smoothstep S커브
+      v = v * (1 - c) + s * c
+    } else if (c < 0) {
+      v = v * (1 + c) - 0.5 * c                // 중간회색으로 평탄화
+    }
+    lut[i] = Math.round(Math.min(1, Math.max(0, v)) * 255)
+  }
+  return lut
+}
+
+/** 캔버스에 LUT 적용 (제자리) */
+export function applyLUT(canvas: HTMLCanvasElement, lut: Uint8ClampedArray): void {
+  const g = canvas.getContext('2d')!
+  const img = g.getImageData(0, 0, canvas.width, canvas.height)
+  const d = img.data
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = lut[d[i]]
+    d[i + 1] = lut[d[i + 1]]
+    d[i + 2] = lut[d[i + 2]]
+  }
+  g.putImageData(img, 0, 0)
+}
 
 /** rot90/flip/fine 를 합친 CSS transform (미리보기용) */
 export const cssTransform = (e: Edits): string =>
@@ -97,13 +141,7 @@ export async function renderFinal(file: File, e: Edits, quality = 0.95): Promise
   }
 
   if (e.brightness !== 0 || e.contrast !== 0) {
-    const c = document.createElement('canvas')
-    c.width = canvas.width
-    c.height = canvas.height
-    const g = c.getContext('2d')!
-    g.filter = cssFilter(e)
-    g.drawImage(canvas, 0, 0)
-    canvas = c
+    applyLUT(canvas, buildLUT(e.brightness, e.contrast))
   }
 
   const blob: Blob = await new Promise((res, rej) =>
