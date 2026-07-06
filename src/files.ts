@@ -75,29 +75,16 @@ export async function openFolderFS(): Promise<Photo[]> {
   return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** 파일 다중 선택 — 폴더 선택이 브라우저 차단(바탕화면·드라이브 루트 등)될 때 우회로.
-    저장은 지정한 저장 폴더로, 미지정 시 다운로드. */
-export async function openFilesFS(): Promise<Photo[]> {
-  const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
-    multiple: true,
-    types: [{ description: '사진', accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.nef'] } }],
-  })
-  dirHandle = null // 이전 폴더 세션과 분리 — 저장은 저장 폴더 지정 또는 다운로드
-  saveDirHandle = null
-  const out: Photo[] = []
-  for (const h of handles) {
-    try {
-      out.push(await toPhoto(await h.getFile(), h))
-    } catch (e) {
-      console.warn(e)
-    }
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
-}
-
+/** 읽기전용 폴더 열기(webkitdirectory) — FS API 폴더 선택이 브라우저 차단
+    (바탕화면·드라이브 루트 등)될 때의 우회로이자 비크로미움 폴백.
+    쓰기 권한이 없어 저장은 지정한 저장 폴더 또는 다운로드로. */
 export async function openFolderFallback(files: FileList): Promise<Photo[]> {
+  dirHandle = null // 이전 FS 폴더 세션과 분리
+  saveDirHandle = null
+  const topLevel = (f: File) =>
+    ((f as any).webkitRelativePath || '').split('/').length <= 2 // 하위 폴더 제외
   const out: Photo[] = []
-  for (const f of [...files].filter((f) => IMG_RE.test(f.name))) {
+  for (const f of [...files].filter((f) => IMG_RE.test(f.name) && topLevel(f))) {
     try {
       out.push(await toPhoto(f, null))
     } catch (e) {
@@ -115,7 +102,7 @@ function editedName(name: string): string {
 export async function savePhoto(photo: Photo, blob: Blob): Promise<string> {
   const outName = editedName(photo.name)
   const target = saveDirHandle ?? dirHandle
-  if (target && photo.handle) {
+  if (target) {
     const fh = await target.getFileHandle(outName, { create: true })
     const w = await fh.createWritable()
     await w.write(blob)
