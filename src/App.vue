@@ -176,7 +176,7 @@ function onKey(e: KeyboardEvent) {
   }
   if (e.key === 'ArrowRight') goto(idx.value + 1)
   else if (e.key === 'ArrowLeft') goto(idx.value - 1)
-  else if (e.key === '\\') showOriginal.value = !showOriginal.value
+  else if (e.key === '/') showOriginal.value = !showOriginal.value
   else if (e.key === '0') canvasRef.value?.fitView()
   else if (e.key === 'r' || e.key === 'R') enterCrop()
   else if (e.ctrlKey && e.key === ']') set('rot90', (edits.value.rot90 + 1) % 4)
@@ -294,7 +294,7 @@ onUnmounted(() => {
           </button>
           <button class="wide" @mousedown="showOriginal = true" @mouseup="showOriginal = false"
                   @mouseleave="showOriginal = false">
-            👁 원본 보기 (누르고 있기 · \)
+            👁 보정 전 밝기·대비 (누르고 있기 · /)
           </button>
           <button class="wide" @click="undo">↶ 실행취소 (Ctrl+Z)</button>
         </section>

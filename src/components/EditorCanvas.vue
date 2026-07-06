@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { applyLUT, buildLUT, orientedSize, renderOriented, type Edits } from '../edits'
+import { buildLUT, orientedSize, renderOriented, type Edits } from '../edits'
 import type { Photo } from '../files'
 
 const props = defineProps<{
@@ -106,28 +106,57 @@ async function loadPreview() {
   } else {
     bmp = full
   }
+  baseKey = '' // 사진 교체 → 베이스 캐시 무효화
+  baseCanvas = null
   fitView()
   syncRectFromEdits()
   render()
 }
 
+// oriented 베이스 캐시: 기하(rot90/flip/fine)가 같으면 회전 재계산·픽셀 재독출 생략
+// → 밝기/대비 드래그 시 LUT 매핑 + putImageData만 수행 (저사양 PC 렉 완화)
+let baseCanvas: HTMLCanvasElement | null = null
+let baseData: ImageData | null = null
+let outData: ImageData | null = null
+let baseKey = ''
+
+function orientedBase(): HTMLCanvasElement {
+  const e = props.edits
+  const key = `${e.rot90}|${e.flipH}|${e.flipV}|${e.fineDeg}`
+  if (!baseCanvas || key !== baseKey) {
+    baseCanvas = renderOriented(bmp!, { ...e, crop: null })
+    baseData = baseCanvas.getContext('2d')!.getImageData(0, 0, baseCanvas.width, baseCanvas.height)
+    outData = new ImageData(baseCanvas.width, baseCanvas.height)
+    baseKey = key
+  }
+  return baseCanvas
+}
+
 function render() {
   if (!bmp || !canvasEl.value) return
-  const e = props.showOriginal
-    ? { ...props.edits, rot90: 0, flipH: false, flipV: false, fineDeg: 0, crop: null }
-    : props.edits
-  // 항상 풀 oriented 렌더 (크롭은 오버레이로 표현 — 바깥이 계속 보이도록)
-  const c = renderOriented(bmp, { ...e, crop: null })
+  // 원본 보기: 기하(회전·플립·크롭)는 유지, 밝기/대비만 보정 전으로
+  const e = props.edits
+  const c = orientedBase() // 크롭은 오버레이로 표현 — 바깥이 계속 보이도록
   const cv = canvasEl.value
   cv.width = c.width
   cv.height = c.height
   const g = cv.getContext('2d')!
-  g.drawImage(c, 0, 0)
   if (!props.showOriginal && (e.brightness !== 0 || e.contrast !== 0)) {
-    applyLUT(cv, buildLUT(e.brightness, e.contrast))
+    const lut = buildLUT(e.brightness, e.contrast)
+    const s = baseData!.data
+    const d = outData!.data
+    for (let i = 0; i < s.length; i += 4) {
+      d[i] = lut[s[i]]
+      d[i + 1] = lut[s[i + 1]]
+      d[i + 2] = lut[s[i + 2]]
+      d[i + 3] = s[i + 3]
+    }
+    g.putImageData(outData!, 0, 0)
+  } else {
+    g.drawImage(c, 0, 0)
   }
   // view 모드 + 크롭 존재: 바깥 어둡게 (라이트룸식 — 잘린 부분도 계속 보임)
-  if (props.mode === 'view' && e.crop && !props.showOriginal) {
+  if (props.mode === 'view' && e.crop) {
     const s = 1 / fullScale()
     dimOutside(g, cv, e.crop.x * s, e.crop.y * s, e.crop.w * s, e.crop.h * s, 0.72)
   }
