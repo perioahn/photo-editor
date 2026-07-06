@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import EditorCanvas from './components/EditorCanvas.vue'
 import { freshEdits, isDirty, renderFinal, type Edits } from './edits'
-import { hasFS, openFolderFallback, openFolderFS, pickSaveFolder, saveDirName, savePhoto, type Photo } from './files'
+import { hasFS, openFilesFS, openFolderFallback, openFolderFS, pickSaveFolder, saveDirName, savePhoto, type Photo } from './files'
 
 const photos = ref<Photo[]>([])
 const idx = ref(0)
@@ -86,6 +86,19 @@ async function openFolder() {
     msg.value = photos.value.length ? `${photos.value.length}장 로드됨` : '사진 없음'
   } catch (e: any) {
     if (e?.name !== 'AbortError') msg.value = `폴더 열기 실패: ${e.message ?? e}`
+  }
+}
+
+// 폴더 선택이 브라우저 차단(바탕화면·드라이브 루트 등)될 때 우회로
+async function openFiles() {
+  try {
+    photos.value = await openFilesFS()
+    idx.value = 0
+    saveFolder.value = null
+    msg.value = photos.value.length
+      ? `${photos.value.length}장 로드됨 (저장 폴더 지정 안 하면 다운로드로 저장)` : '사진 없음'
+  } catch (e: any) {
+    if (e?.name !== 'AbortError') msg.value = `파일 열기 실패: ${e.message ?? e}`
   }
 }
 
@@ -217,6 +230,8 @@ onUnmounted(() => {
     <header class="topbar">
       <b>임상사진 에디터</b>
       <button v-if="hasFS" class="primary" @click="openFolder">📁 편집할 사진 폴더 열기</button>
+      <button v-if="hasFS" title="폴더 선택이 안 되면(바탕화면·드라이브 전체 등) 사진 파일을 직접 골라 여세요"
+              @click="openFiles">🖼 사진 파일 선택</button>
       <label v-else class="primary file-label">
         📁 폴더 선택 (저장=다운로드)
         <input ref="fallbackInput" type="file" webkitdirectory multiple hidden @change="onFallbackFiles" />
