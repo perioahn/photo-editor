@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import EditorCanvas from './components/EditorCanvas.vue'
 import { freshEdits, isDirty, renderFinal, type Edits } from './edits'
-import { hasFS, openFolderFallback, openFolderFS, pickSaveFolder, saveDirName, savePhoto, type Photo } from './files'
+import { hasFS, openFolderFallback, pickSaveFolder, savePhoto, type Photo } from './files'
 
 const photos = ref<Photo[]>([])
 const idx = ref(0)
@@ -77,17 +77,6 @@ function undo() {
 const reactiveEdits = (e: Edits): Edits => reactive(JSON.parse(JSON.stringify(e)))
 
 const saveFolder = ref<string | null>(null)
-
-async function openFolder() {
-  try {
-    photos.value = await openFolderFS()
-    idx.value = 0
-    saveFolder.value = saveDirName() // 기본 = 편집 폴더
-    msg.value = photos.value.length ? `${photos.value.length}장 로드됨` : '사진 없음'
-  } catch (e: any) {
-    if (e?.name !== 'AbortError') msg.value = `폴더 열기 실패: ${e.message ?? e}`
-  }
-}
 
 async function chooseSaveFolder() {
   try {
@@ -218,12 +207,9 @@ onUnmounted(() => {
   <div class="layout">
     <header class="topbar">
       <b>임상사진 에디터</b>
-      <button v-if="hasFS" class="primary" @click="openFolder">📁 편집할 사진 폴더 열기</button>
-      <button v-if="hasFS" title="바탕화면·드라이브 전체 등이 '시스템 파일' 오류로 안 열릴 때 이 버튼으로 여세요"
-              @click="fallbackInput?.click()">📂 안 열리면 여기로</button>
-      <button v-if="!hasFS" class="primary" @click="fallbackInput?.click()">📁 폴더 선택</button>
+      <button class="primary" @click="fallbackInput?.click()">📁 편집할 사진 폴더 열기</button>
       <input ref="fallbackInput" type="file" webkitdirectory multiple hidden @change="onFallbackFiles" />
-      <button v-if="hasFS && photos.length" :title="`현재 저장 위치: ${saveFolder ?? '편집 폴더'}`"
+      <button v-if="hasFS && photos.length" :title="`현재 저장 위치: ${saveFolder ?? '다운로드 폴더'}`"
               @click="chooseSaveFolder">
         💾→ {{ saveFolder ?? '저장 폴더' }}
       </button>

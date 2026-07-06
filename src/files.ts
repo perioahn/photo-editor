@@ -13,14 +13,13 @@ export interface Photo {
 export const hasFS = 'showDirectoryPicker' in window
   && !new URLSearchParams(location.search).has('fallback') // ?fallback=1 = 강제 폴백(테스트용)
 
-let dirHandle: FileSystemDirectoryHandle | null = null
-let saveDirHandle: FileSystemDirectoryHandle | null = null // null = 편집 폴더와 동일
+let saveDirHandle: FileSystemDirectoryHandle | null = null // null = 다운로드로 저장
 
 export function saveDirName(): string | null {
-  return saveDirHandle?.name ?? dirHandle?.name ?? null
+  return saveDirHandle?.name ?? null
 }
 
-/** 저장 폴더 별도 지정 (기본 = 편집 폴더) */
+/** 저장 폴더 지정 (미지정 시 다운로드) */
 export async function pickSaveFolder(): Promise<string> {
   saveDirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
   return saveDirHandle!.name
@@ -59,28 +58,11 @@ async function toPhoto(f: File, handle: FileSystemFileHandle | null): Promise<Ph
            exifSource: isNef ? f : undefined, dirty: false, saved: false }
 }
 
-export async function openFolderFS(): Promise<Photo[]> {
-  dirHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-  saveDirHandle = null // 새 편집 폴더 선택 → 저장 폴더도 그곳으로 리셋
-  const out: Photo[] = []
-  for await (const entry of (dirHandle as any).values()) {
-    if (entry.kind === 'file' && IMG_RE.test(entry.name) && !entry.name.startsWith('.')) {
-      try {
-        out.push(await toPhoto(await entry.getFile(), entry))
-      } catch (e) {
-        console.warn(e) // 깨진 NEF 등은 건너뜀
-      }
-    }
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/** 읽기전용 폴더 열기(webkitdirectory) — FS API 폴더 선택이 브라우저 차단
-    (바탕화면·드라이브 루트 등)될 때의 우회로이자 비크로미움 폴백.
-    쓰기 권한이 없어 저장은 지정한 저장 폴더 또는 다운로드로. */
+/** 폴더 열기 — 읽기전용 webkitdirectory 방식.
+    FS API 폴더 선택과 달리 바탕화면·드라이브 루트도 브라우저가 차단하지 않고,
+    비크로미움에서도 동작. 쓰기 권한이 없어 저장은 지정한 저장 폴더 또는 다운로드로. */
 export async function openFolderFallback(files: FileList): Promise<Photo[]> {
-  dirHandle = null // 이전 FS 폴더 세션과 분리
-  saveDirHandle = null
+  saveDirHandle = null // 새 폴더 = 새 세션, 저장 폴더 리셋
   const topLevel = (f: File) =>
     ((f as any).webkitRelativePath || '').split('/').length <= 2 // 하위 폴더 제외
   const out: Photo[] = []
@@ -98,16 +80,15 @@ function editedName(name: string): string {
   return name.replace(IMG_RE, '') + '_e.jpg'
 }
 
-/** 저장: FS 모드 = 같은 폴더에 {이름}_e.jpg, 폴백 = 브라우저 다운로드 */
+/** 저장: 저장 폴더 지정 시 {이름}_e.jpg로 그 폴더에, 미지정 시 브라우저 다운로드 */
 export async function savePhoto(photo: Photo, blob: Blob): Promise<string> {
   const outName = editedName(photo.name)
-  const target = saveDirHandle ?? dirHandle
-  if (target) {
-    const fh = await target.getFileHandle(outName, { create: true })
+  if (saveDirHandle) {
+    const fh = await saveDirHandle.getFileHandle(outName, { create: true })
     const w = await fh.createWritable()
     await w.write(blob)
     await w.close()
-    return saveDirHandle ? `${saveDirHandle.name}/${outName}` : outName
+    return `${saveDirHandle.name}/${outName}`
   }
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
